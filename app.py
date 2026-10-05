@@ -14,6 +14,8 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -77,6 +79,11 @@ small{color:#666}
 <input id="download_url" placeholder="https://example.com/file.zip" />
 <label>Save as on InfiniCLOUD (optional, e.g. uploads/file.zip)</label>
 <input id="dest" placeholder="auto-detect filename if empty" />
+<label>Upload method</label>
+<div>
+<label style="display:inline;font-size:14px"><input type="radio" name="method" value="python" checked style="width:auto" /> Python (temp file, progress %, reliable)</label><br/>
+<label style="display:inline;font-size:14px"><input type="radio" name="method" value="curl" style="width:auto" /> curl pipe (no disk, no progress) <small>curl -L URL | curl -u user:pass -T - DAV/file</small></label>
+</div>
 <div class="row">
 <button id="uploadBtn">Upload</button>
 </div>
@@ -90,6 +97,7 @@ for(const k of ["webdav_url","user","password","download_url","dest"]){
   const v=localStorage.getItem(k); if(v) $(k).value=v;
   $(k).addEventListener("input",e=>localStorage.setItem(k,e.target.value));
 }
+{const m=localStorage.getItem("method"); if(m){const r=document.querySelector('input[name=method][value="'+m+'"]'); if(r) r.checked=true;}}
 function creds(){return {webdav_url:$("webdav_url").value.trim(),user:$("user").value.trim(),password:$("password").value};}
 function log(m){$("log").textContent+=(m+"\\n");$("log").scrollTop=1e9;}
 function fmtMB(b){return (b/1024/1024).toFixed(1)+" MB";}
@@ -105,7 +113,9 @@ $("testBtn").onclick=async()=>{
 let timer=null;
 $("uploadBtn").onclick=async()=>{
   const b=$("uploadBtn"); b.disabled=true; $("pbar").style.width="0%";
-  const body={...creds(),download_url:$("download_url").value.trim(),dest:$("dest").value.trim()};
+  const m=(document.querySelector('input[name=method]:checked')||{}).value||"python";
+  localStorage.setItem("method",m);
+  const body={...creds(),download_url:$("download_url").value.trim(),dest:$("dest").value.trim(),method:m};
   if(!body.download_url){$("status").textContent="Enter a download link";b.disabled=false;return;}
   $("status").textContent="Starting..."; $("log").textContent="";
   let job_id=null;
@@ -194,6 +204,103 @@ def update_job(job_id, **kw):
     with JOBS_LOCK:
         if job_id in JOBS:
             JOBS[job_id].update(kw)
+
+
+def _valid_http_url(u):
+    try:
+        p = urllib.parse.urlparse(u.strip())
+        return p.scheme in ("http", "https") and bool(p.netloc)
+    except Exception:
+        return False
+
+
+def run_job_curl(job_id, webdav_url, user, password, download_url, dest):
+    """Zero-disk pipe: curl -L download_url | curl -u user:pass -T - put_url."""
+    try:
+        if shutil.which("curl") is None:
+            raise RuntimeError("curl binary not found on server. Install curl first.")
+        if not _valid_http_url(download_url) or not _valid_http_url(webdav_url):
+            raise RuntimeError("Invalid URL: must start with http:// or https://")
+        base = webdav_url.strip()
+        if not base.endswith("/"):
+            base += "/"
+        download_url = download_url.strip()
+        dest = (dest or "").strip().lstrip("/")
+
+        # Guess filename for PUT target (HEAD attempt for Content-Disposition/size, else URL path)
+        filename = dest
+        total = 0
+        if not filename:
+            try:
+                h = requests.head(download_url, allow_redirects=True, timeout=30,
+                                  headers={"User-Agent": "Mozilla/5.0"})
+                cd = h.headers.get("Content-Disposition", "")
+                total = int(h.headers.get("Content-Length", 0)) or 0
+                if cd:
+                    m = re.search(r"filename\*\s*=\s*UTF-8''([^;]+)", cd, re.I)
+                    if m:
+                        filename = urllib.parse.unquote(m.group(1))
+                    else:
+                        m = re.search(r'filename\s*=\s*"([^"]+)"', cd)
+                        if m:
+                            filename = m.group(1)
+                if not filename:
+                    filename = guess_filename(h.url or download_url, h)
+            except Exception:
+                filename = guess_filename(download_url)
+        filename = (filename or "downloaded_file").lstrip("/")
+        update_job(job_id, filename=filename, total=total, stage="curl-pipe",
+                   percent=10, done_bytes=0,
+                   message=f"Piping (no disk): {download_url[:120]} -> {filename}")
+
+        auth = HTTPBasicAuth(user, password)
+        parent = "/".join(filename.split("/")[:-1])
+        if parent:
+            ensure_remote_dir(base, parent, auth)
+        put_url = base + "/".join(urllib.parse.quote(p, safe="") for p in filename.split("/"))
+        print(f"[job {job_id}] curl pipe: {download_url[:150]} -> {put_url}", flush=True)
+
+        # curl download -> stdout | curl upload stdin. No shell=True (safe args list).
+        dl = subprocess.Popen(
+            ["curl", "-L", "--fail", "-sS", "--connect-timeout", "30", "--max-time", "0",
+             "-A", "Mozilla/5.0", download_url],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        up_args = ["curl", "-sS", "--fail-with-body", "--connect-timeout", "30",
+                     "-u", f"{user}:{password}",
+                     "-H", "Content-Type: application/octet-stream",
+                     "-T", "-", put_url]
+        if total:
+            # pipe size unknown to curl -> would use chunked (InfiniCLOUD rejects).
+            # HEAD gave us a size, so send explicit Content-Length.
+            up_args[up_args.index("-T") + 2:up_args.index("-T") + 2] = ["-H", f"Content-Length: {total}"]
+        up = subprocess.Popen(up_args, stdin=dl.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Allow dl SIGPIPE if up exits early
+        if dl.stdout:
+            dl.stdout.close()
+        _, up_out = up.communicate()
+        dl_err = b""
+        try:
+            _, dl_err = dl.communicate(timeout=5)
+        except Exception:
+            try:
+                dl.kill()
+            except Exception:
+                pass
+        if up.returncode == 0 and dl.returncode in (0, None, -13):  # -13 = SIGPIPE after up done
+            update_job(job_id, status="done", stage="done", percent=100,
+                       done_bytes=total, message=f"Uploaded {filename} via curl pipe (no temp file).")
+        else:
+            detail = (up_out or b"").decode(errors="replace")[:400]
+            d_err = (dl_err or b"").decode(errors="replace")[:400]
+            if up.returncode == 22:
+                # HTTP error from WebDAV side (auth/quota/path in body)
+                tail = put_url.split("/dav/")[-1][:120] if "/dav/" in put_url else put_url[-120:]
+                if "404" in detail:
+                    raise RuntimeError(f"curl upload 404: WebDAV path not found for '{tail}'. Fix: 1) WebDAV URL must be https://xxx.infini-cloud.net/dav/ (with /dav/) 2) Save-as parent folder must exist (auto-created, check Test Connection first) 3) try Save-as with plain filename only, no subfolders. Detail: {detail[:250]}")
+                raise RuntimeError(f"curl upload failed (HTTP error, code 22) for '{tail}'. Check user/pass, /dav/ URL, quota. Detail: {detail[:300]}")
+            raise RuntimeError(f"curl pipe failed (dl={dl.returncode} up={up.returncode}). dl_err: {d_err[:200]} up: {detail[:200]}")
+    except Exception as e:
+        update_job(job_id, status="error", stage="error", message=str(e)[:1000])
 
 
 def run_job(job_id, webdav_url, user, password, download_url, dest):
@@ -368,15 +475,20 @@ class Handler(BaseHTTPRequestHandler):
             for k in ("webdav_url", "user", "password", "download_url"):
                 if not body.get(k):
                     return self.send_json({"ok": False, "message": f"Missing field: {k}"}, 400)
+            method = (body.get("method") or "python").strip().lower()
+            if method not in ("python", "curl"):
+                method = "python"
             job_id = uuid.uuid4().hex[:12]
             with JOBS_LOCK:
                 JOBS[job_id] = {"status": "running", "stage": "queued", "percent": 0,
-                                "done_bytes": 0, "total": 0, "filename": "", "message": "Queued..."}
-            t = threading.Thread(target=run_job, args=(job_id, body["webdav_url"], body["user"],
-                                                       body["password"], body["download_url"], body.get("dest", "")),
+                                "done_bytes": 0, "total": 0, "filename": "",
+                                "message": f"Queued ({method})..."}
+            target = run_job_curl if method == "curl" else run_job
+            t = threading.Thread(target=target, args=(job_id, body["webdav_url"], body["user"],
+                                                      body["password"], body["download_url"], body.get("dest", "")),
                                  daemon=True)
             t.start()
-            return self.send_json({"ok": True, "job_id": job_id, "message": "Started"})
+            return self.send_json({"ok": True, "job_id": job_id, "message": "Started", "method": method})
 
         return self.send_json({"ok": False, "message": "Unknown endpoint"}, 404)
 
