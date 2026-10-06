@@ -39,21 +39,26 @@ PAGE_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>InfiniCLOUD URL Uploader</title>
 <style>
-body{font-family:system-ui,Arial,sans-serif;max-width:640px;margin:24px auto;padding:0 16px;background:#f7f7f8;color:#111}
-.card{background:#fff;border:1px solid #e2e2e2;border-radius:12px;padding:16px;margin-bottom:16px}
-label{display:block;font-size:13px;margin:10px 0 4px;color:#333}
-input{width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:15px;box-sizing:border-box}
+body{font-family:'NType 82','NType 82 Mono','NDot',monospace;max-width:640px;margin:24px auto;padding:0 16px;background:#000;color:#33ff33}
+h2,h3{font-family:'NDot','NType 82',monospace;letter-spacing:2px;text-shadow:0 0 8px #33ff33}
+.card{background:#000;border:1px solid #33ff33;border-radius:8px;padding:16px;margin-bottom:16px;box-shadow:0 0 12px rgba(51,255,51,.25)}
+label{display:block;font-size:13px;margin:10px 0 4px;color:#33ff33;font-family:'NType 82','NType 82 Mono',monospace}
+input{width:100%;padding:10px;background:#000;color:#33ff33;border:1px solid #33ff33;border-radius:4px;font-size:15px;box-sizing:border-box;font-family:'NType 82 Mono','NType 82',monospace;caret-color:#33ff33}
+input::placeholder{color:#1a7a1a}
+input:focus{outline:none;box-shadow:0 0 8px #33ff33}
 .row{display:flex;gap:8px;margin-top:12px}
-button{padding:10px 16px;border:0;border-radius:8px;font-size:15px;cursor:pointer}
-#testBtn{background:#eee}
-#uploadBtn{background:#0a7cff;color:#fff;flex:1}
-button:disabled{opacity:.5}
-#status,#testStatus{font-size:14px;margin-top:10px;white-space:pre-wrap}
-.ok{color:green}.err{color:#c00}
-small{color:#666}
-.bar{height:10px;background:#eee;border-radius:6px;overflow:hidden;margin-top:8px}
-.bar>div{height:100%;width:0%;background:#0a7cff;transition:width .3s}
-.log{background:#111;color:#0f0;padding:10px;border-radius:8px;font-size:12px;max-height:200px;overflow:auto;margin-top:8px;white-space:pre-wrap}
+button{padding:10px 16px;background:#000;color:#33ff33;border:1px solid #33ff33;border-radius:4px;font-size:15px;cursor:pointer;font-family:'NDot','NType 82',monospace;letter-spacing:1px;text-shadow:0 0 6px #33ff33}
+button:hover{background:#33ff33;color:#000;text-shadow:none}
+#testBtn{background:#000}
+#uploadBtn{background:#000;flex:1;font-weight:bold}
+#uploadBtn:hover{background:#33ff33;color:#000}
+button:disabled{opacity:.4}
+#status,#testStatus{font-size:14px;margin-top:10px;white-space:pre-wrap;font-family:'NType 82 Mono',monospace}
+.ok{color:#33ff33}.err{color:#ff4444}
+small{color:#33ff33;opacity:.8}
+.bar{height:12px;background:#031003;border:1px solid #33ff33;border-radius:4px;overflow:hidden;margin-top:8px}
+.bar>div{height:100%;width:0%;background:#33ff33;box-shadow:0 0 8px #33ff33;transition:width .3s}
+.log{background:#000;color:#33ff33;border:1px solid #33ff33;padding:10px;border-radius:4px;font-size:12px;max-height:200px;overflow:auto;margin-top:8px;white-space:pre-wrap;font-family:'NType 82 Mono',monospace}
 </style>
 </head>
 <body>
